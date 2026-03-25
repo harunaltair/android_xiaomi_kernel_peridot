@@ -59,15 +59,17 @@ jobs:
           # 3. Inject Versioning
           sed -i 's/CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="-Mutan-Extreme-A16"/g' out/.config
           
-          # 4. Final Compilation (Mahiru Style)
+          # 5. Final Compilation (Simplified for Harun Source)
+          # Kita hapus target 'dtbo' dari baris perintah karena sering menyebabkan 'No rule to make target'
+          # Makefile di repo ini akan membangun DTB & DTBO secara otomatis saat memanggil 'Image.gz' atau 'dtbs'
           yes "" | make -j$(nproc --all) O=out \
               LLVM=1 \
               LLVM_IAS=1 \
               CC=clang \
               CLANG_TRIPLE=aarch64-linux-gnu- \
               CROSS_COMPILE=aarch64-linux-android- \
-              KCFLAGS="-O2 -pipe -Wno-error" \
-              Image.gz dtbs dtbo
+              KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration" \
+              Image.gz dtbs
 
       - name: Package with AnyKernel3
         run: |
