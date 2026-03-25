@@ -1,1 +1,119 @@
+name: Build Mutan Kernel A16 Extreme (Poco F6)
 
+on:
+  push:
+    branches: [ 16.0 ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Build Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y bc bison build-essential flex git git-lfs zip \
+          libssl-dev libncurses5-dev libncursesw5-dev libelf-dev binutils-aarch64-linux-gnu pahole
+
+      - name: Setup ZyCromerZ Clang (20.0.0-git)
+        run: |
+          mkdir clang
+          cd clang
+          # Link Clang 20 (Jan 2025) untuk optimalisasi SM8635 (Android 16)
+          curl -LO https://github.com/ZyCromerZ/Clang/releases/download/20.0.0git-20250129-release/Clang-20.0.0git-20250129.tar.gz
+          tar -xf *.tar.gz
+          echo "$(pwd)/bin" >> $GITHUB_PATH
+
+      - name: Build Mutan Kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export KBUILD_BUILD_USER="lightbulb"
+          export KBUILD_BUILD_HOST="Mutan-BuildServer"
+
+          # 1. Membersihkan sisa KernelSU-Next lawas (jika ada)
+          git rm -rf --cached KernelSU-Next || true
+          sed -i '/kernelsu/d' drivers/Kconfig
+          sed -i '/kernelsu/d' drivers/Makefile
+
+          # 2. Initialize Defconfig (Path Vendor crDroid 16)
+          make O=out vendor/peridot_defconfig
+          
+          # 3. Android 16 & HyperOS 3 Optimization
+          # Penting untuk boot HyperOS: EROFS
+          scripts/config --file out/.config --enable CONFIG_EROFS_FS
+          scripts/config --file out/.config --enable CONFIG_EROFS_FS_ZIP
+          scripts/config --file out/.config --enable CONFIG_EROFS_FS_XATTR
+          scripts/config --file out/.config --enable CONFIG_OVERLAY_FS
+          
+          # Performa Extreme & RAM Management
+          scripts/config --file out/.config --enable CONFIG_ZRAM
+          scripts/config --file out/.config --enable CONFIG_PSI
+          scripts/config --file out/.config --enable CONFIG_MEMCG
+          scripts/config --file out/.config --set-val CONFIG_HZ 300
+          scripts/config --file out/.config --enable CONFIG_TCP_CONG_BBR
+          scripts/config --file out/.config --set-str CONFIG_DEFAULT_TCP_CONG "bbr"
+          
+          # Matikan Debugging untuk performa maksimal
+          scripts/config --file out/.config --disable CONFIG_KASAN
+          scripts/config --file out/.config --disable CONFIG_UBSAN
+          scripts/config --file out/.config --disable CONFIG_SLUB_DEBUG
+          
+          # 4. Inject Mutan Versioning
+          sed -i 's/CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="-Mutan-Extreme-A16"/g' out/.config
+          
+          # 5. Final Compilation (Mahiru/Harun Style)
+          # 'yes "" |' untuk bypass pertanyaan config baru di Android 16
+          yes "" | make -j$(nproc --all) O=out \
+              LLVM=1 \
+              LLVM_IAS=1 \
+              CC=clang \
+              CLANG_TRIPLE=aarch64-linux-gnu- \
+              CROSS_COMPILE=aarch64-linux-android- \
+              KCFLAGS="-O2 -pipe -Wno-error" \
+              Image.gz dtbs dtbo
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3.git -b master
+          cd AnyKernel3
+          
+          # Sesuaikan info di anykernel.sh
+          sed -i 's/kernel.string=.*/kernel.string=Mutan-Kernel-A16-Extreme (Poco F6)/g' anykernel.sh
+          sed -i 's/device.name1=.*/device.name1=peridot/g' anykernel.sh
+          
+          # Salin file hasil kompilasi
+          cp ../out/arch/arm64/boot/Image.gz .
+          
+          # Logika pengambilan DTBO
+          if [ -f "../out/arch/arm64/boot/dtbo.img" ]; then
+              cp ../out/arch/arm64/boot/dtbo.img .
+          else
+              cp ../out/arch/arm64/boot/dtbo ./dtbo.img
+          fi
+          
+          # Ambil semua DTB Xiaomi
+          find ../out/arch/arm64/boot/dts/vendor/xiaomi/ -name "*.dtb" -exec cp {} . \;
+          
+          zip -r9 ../Mutan-Kernel-Peridot-A16-Extreme.zip *
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          tag_name: v1.0.0-$(date +%Y%m%d-%H%M)
+          name: Mutan-Kernel-A16-Extreme (Poco F6)
+          body: |
+            **Mutan-Kernel-A16-Extreme for Peridot**
+            - Basis: crDroid 16.0 (Android 16 Native)
+            - Compiler: ZyCromerZ Clang 20.0.0-git (Jan 2025)
+            - Cocok untuk: HyperOS 3 / Android 16
+            - Optimasi: EROFS, BBR, PSI, -O2 Extreme Performance
+          files: "*.zip"
