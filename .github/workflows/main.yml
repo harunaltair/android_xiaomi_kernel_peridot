@@ -10,98 +10,95 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
-      - name: Install Build Dependencies
+      - name: Install Dependencies
         run: |
           sudo apt update
-          sudo apt install -y bc bison build-essential flex git git-lfs zip \
-          libssl-dev libncurses5-dev libncursesw5-dev libelf-dev binutils-aarch64-linux-gnu pahole
+          sudo apt install -y bc bison build-essential flex git zip curl \
+          libssl-dev libncurses-dev libelf-dev pahole
 
-      - name: Setup ZyCromerZ Clang (20.0.0-git)
+      # ✅ Clang stabil (AOSP style)
+      - name: Setup Clang 17
         run: |
-          mkdir clang
-          cd clang
-          curl -LO https://github.com/ZyCromerZ/Clang/releases/download/20.0.0git-20250129-release/Clang-20.0.0git-20250129.tar.gz
-          tar -xf *.tar.gz
-          echo "$(pwd)/bin" >> $GITHUB_PATH
+          git clone --depth=1 https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 clang
+          echo "$(pwd)/clang/clang-r498229/bin" >> $GITHUB_PATH
 
-      - name: Build Mutan Kernel
+      - name: Build Kernel (GKI + Peridot)
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
-          export KBUILD_BUILD_USER="lightbulb"
-          export KBUILD_BUILD_HOST="Mutan-BuildServer"
+          export KBUILD_BUILD_USER="harun"
+          export KBUILD_BUILD_HOST="mutan-builder"
 
-          # 1. Initialize Defconfig (Sesuai Scan: arch/arm64/configs/defconfig)
-          make O=out defconfig
-          
-          # 2. Optimasi HyperOS 3 & Android 16
-          scripts/config --file out/.config --enable CONFIG_EROFS_FS
-          scripts/config --file out/.config --enable CONFIG_EROFS_FS_ZIP
-          scripts/config --file out/.config --enable CONFIG_EROFS_FS_XATTR
-          scripts/config --file out/.config --enable CONFIG_OVERLAY_FS
-          scripts/config --file out/.config --enable CONFIG_ZRAM
-          scripts/config --file out/.config --enable CONFIG_PSI
-          scripts/config --file out/.config --set-val CONFIG_HZ 300
-          scripts/config --file out/.config --enable CONFIG_TCP_CONG_BBR
-          scripts/config --file out/.config --set-str CONFIG_DEFAULT_TCP_CONG "bbr"
-          
-          # Extreme Performance (Disable Debugging)
-          scripts/config --file out/.config --disable CONFIG_KASAN
-          scripts/config --file out/.config --disable CONFIG_UBSAN
-          scripts/config --file out/.config --disable CONFIG_SLUB_DEBUG
-          
-          # 3. Inject Versioning
+          # 1. Base GKI config
+          make O=out gki_defconfig
+
+          # 2. Merge vendor config (WAJIB)
+          scripts/kconfig/merge_config.sh -O out \
+          out/.config \
+          arch/arm64/configs/consolidate.fragment \
+          arch/arm64/configs/vendor/peridot_GKI.config
+
+          # Optional Qualcomm base
+          if [ -f arch/arm64/configs/db845c_gki.fragment ]; then
+            scripts/kconfig/merge_config.sh -O out \
+            out/.config \
+            arch/arm64/configs/db845c_gki.fragment
+          fi
+
+          # 3. Sync config
+          make O=out olddefconfig
+
+          # 4. Versioning (aman)
           sed -i 's/CONFIG_LOCALVERSION=.*/CONFIG_LOCALVERSION="-Mutan-Extreme-A16"/g' out/.config
-          
-          # 5. Final Compilation (Simplified for Harun Source)
-          # Kita hapus target 'dtbo' dari baris perintah karena sering menyebabkan 'No rule to make target'
-          # Makefile di repo ini akan membangun DTB & DTBO secara otomatis saat memanggil 'Image.gz' atau 'dtbs'
-          yes "" | make -j$(nproc --all) O=out \
+
+          # 5. Build
+          make -j$(nproc) O=out \
               LLVM=1 \
               LLVM_IAS=1 \
               CC=clang \
-              CLANG_TRIPLE=aarch64-linux-gnu- \
-              CROSS_COMPILE=aarch64-linux-android- \
-              KCFLAGS="-O2 -pipe -Wno-error -Wno-implicit-function-declaration" \
-              Image.gz dtbs
+              Image.gz dtbs 2>&1 | tee build.log
 
-      - name: Package with AnyKernel3
+      - name: Package AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git -b master
           cd AnyKernel3
+
           sed -i 's/kernel.string=.*/kernel.string=Mutan-Kernel-A16-Extreme (Poco F6)/g' anykernel.sh
           sed -i 's/device.name1=.*/device.name1=peridot/g' anykernel.sh
-          
-          # Ambil Image terkompresi
+
           cp ../out/arch/arm64/boot/Image.gz .
-          
-          # Ambil DTBO
+
+          # dtbo handling
           if [ -f "../out/arch/arm64/boot/dtbo.img" ]; then
               cp ../out/arch/arm64/boot/dtbo.img .
-          else
-              cp ../out/arch/arm64/boot/dtbo ./dtbo.img
           fi
-          
-          # Ambil DTB (Path Sesuai Scan Repo Harun)
-          find ../out/arch/arm64/boot/dts/vendor/qcom/ -name "*.dtb" -exec cp {} . \;
-          
+
+          # dtb
+          find ../out/arch/arm64/boot/ -name "*.dtb" -exec cp {} . \;
+
           zip -r9 ../Mutan-Kernel-Peridot-Extreme.zip *
 
-      - name: Create GitHub Release
+      - name: Upload Artifact (Debug)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         if: success()
         with:
-          tag_name: v1.0.0-$(date +%Y%m%d-%H%M)
+          tag_name: v1.0.0-${{ github.run_number }}
           name: Mutan-Kernel-A16-Extreme (Poco F6)
           body: |
-            **Mutan-Kernel-A16-Extreme**
-            - Basis: HarunAltair (Android 16 Clean)
-            - Compiler: ZyCromerZ Clang 20.0.0-git
-            - Optimized for: HyperOS 3 & Peridot
+            Mutan Kernel A16 Extreme
+            - Base: crDroid GKI + peridot config
+            - Clang: 17 (stable)
           files: "*.zip"
